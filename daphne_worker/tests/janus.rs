@@ -8,13 +8,11 @@ mod test_runner;
 use assert_matches::assert_matches;
 use daphne::constants;
 use daphne_worker::InternalAggregateInfo;
-use janus_prio::{codec::Decode, vdaf::prio3::Prio3Aes128Sum};
+use prio::{codec::Decode, vdaf::prio3::Prio3};
 use rand::prelude::*;
 use test_runner::{TestRunner, COLLECTOR_HPKE_SECRET_KEY};
 
 // Test that daphne can aggregate a report from a Janus client.
-//
-// TODO(MVP) Update Daphne to latest version of the draft to make this test pass.
 #[tokio::test]
 #[cfg_attr(not(feature = "test_janus"), ignore)]
 async fn janus_client() {
@@ -31,7 +29,7 @@ async fn janus_client() {
 
     let vdaf = assert_matches!(t.vdaf, daphne::VdafConfig::Prio3(ref prio3_config) => {
         assert_matches!(prio3_config, daphne::Prio3Config::Sum{ bits } =>
-            Prio3Aes128Sum::new(2, *bits).unwrap()
+            Prio3::new_aes128_sum(2, *bits).unwrap()
         )
     });
 
@@ -48,7 +46,6 @@ async fn janus_client() {
     let janus_client = janus_server::client::Client::new(
         janus_client_parameters,
         vdaf,
-        (),
         client_clock,
         &client,
         leader_hpke_config,

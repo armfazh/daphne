@@ -3,8 +3,6 @@
 
 // TODO Figure out why cargo thinks there is dead code here.
 
-janus_test_util::define_ephemeral_datastore!();
-
 use assert_matches::assert_matches;
 use daphne::{
     constants::MEDIA_TYPE_COLLECT_REQ,
@@ -13,6 +11,7 @@ use daphne::{
 };
 use daphne_worker::InternalAggregateInfo;
 use futures::channel::oneshot::Sender;
+use janus::time::{Clock, RealClock};
 use janus_server::datastore::{Crypter, Datastore};
 use prio::codec::Decode;
 use std::{
@@ -22,6 +21,8 @@ use std::{
 };
 use tokio::task::JoinHandle;
 use url::Url;
+
+janus_test_util::define_ephemeral_datastore!();
 
 const JANUS_HELPER_PORT: u16 = 9788;
 
@@ -379,56 +380,38 @@ impl TestRunner {
         post_internal_test_reset(&t.http_client(), &t.leader_url, &t.task_id, &t.batch_info())
             .await;
 
-        // TODO Use the same version of prio for Janus and daphne. (Janus currently points to
-        // an unreleased version.)
-        let task_id =
-            <janus::message::TaskId as janus_prio::codec::Decode>::get_decoded(t.task_id.as_ref())
-                .unwrap();
+        let task_id = janus::message::TaskId::get_decoded(t.task_id.as_ref()).unwrap();
         let aggregator_endpoints = vec![t.leader_url.clone(), t.helper_url.clone()];
         let vdaf = assert_matches!(t.vdaf, daphne::VdafConfig::Prio3(ref prio3_config) => {
             assert_matches!(prio3_config, daphne::Prio3Config::Sum{ bits } =>
-                janus_server::task::VdafInstance::Prio3Aes128Sum{ bits: *bits }
-            )
+                janus_server::task::VdafInstance::Real(janus::task::VdafInstance::Prio3Aes128Sum{ bits: *bits }
+            ))
         });
 
         let task_list_object: serde_json::Value =
             serde_json::from_str(JANUS_HELPER_TASK_LIST).unwrap();
         let task_config_object = task_list_object.get(JANUS_HELPER_TASK).unwrap();
-        let dap_pverify_param_object = task_config_object.get("dap_verify_param").unwrap();
 
         // TODO Use the same version of prio for Janus and daphne. (Janus currently points to
         // an unreleased version.)
-        let collector_hpke_config =
-            <janus::message::HpkeConfig as janus_prio::codec::Decode>::get_decoded(
-                &hex::decode(
-                    task_config_object
-                        .get("collector_hpke_config")
-                        .unwrap()
-                        .as_str()
-                        .unwrap(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-
-        let vdaf_verify_param = hex::decode(
-            dap_pverify_param_object
-                .get("vdaf")
-                .unwrap()
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap();
-
-        let agg_auth_key = janus_server::task::AggregatorAuthKey::new(
+        let collector_hpke_config = janus::message::HpkeConfig::get_decoded(
             &hex::decode(
-                dap_pverify_param_object
-                    .get("hmac")
+                task_config_object
+                    .get("collector_hpke_config")
                     .unwrap()
                     .as_str()
                     .unwrap(),
             )
             .unwrap(),
+        )
+        .unwrap();
+
+        let vdaf_verify_key = hex::decode(
+            task_config_object
+                .get("vdaf_verify_key")
+                .unwrap()
+                .as_str()
+                .unwrap(),
         )
         .unwrap();
 
@@ -439,18 +422,18 @@ impl TestRunner {
             aggregator_endpoints,
             vdaf,
             janus::message::Role::Helper,
-            vec![vdaf_verify_param],
+            vec![vdaf_verify_key],
             1, // max_batch_lifetime
             t.min_batch_size,
             janus::message::Duration::from_seconds(t.min_batch_duration),
             janus::message::Duration::from_seconds(0), // clock skew tolerance
             collector_hpke_config,
-            vec![agg_auth_key],
+            vec![], // XXX auth tokens
             [(hpke_config, hpke_sk)],
         )
         .unwrap();
 
-        let (datastore, db_handle) = ephemeral_datastore().await;
+        let (datastore, db_handle) = ephemeral_datastore(RealClock::default()).await;
         let datastore = Arc::new(datastore);
         datastore
             .run_tx(|tx| {
